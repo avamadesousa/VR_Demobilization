@@ -1,0 +1,257 @@
+---
+title: "ConditionalDemobilization_2026"
+author: "Ava Ma de Sousa"
+date: "11/11/2026"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    code_folding: show
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = TRUE, error = FALSE)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(datawizard)
+library(emmeans)
+library(sandwich)
+library(lmtest)
+
+analysis_dir <- "."
+output_dir <- "."
+figure_dir <- "figures"
+analysis_data <- read.csv("complete_cleaned_data.csv")
+analysis_data$group <- factor(analysis_data$group,
+                              levels = c("Black", "Hispanic/Latine", "Asian"))
+analysis_data$recruitment <- factor(analysis_data$recruitment,
+                                    levels = c("UM panel", "UCSB SONA"))
+```
+
+
+```{r center-and-split}
+analysis_data <- analysis_data %>% group_by(group) %>% mutate(
+  lifetime_ca_c = as.numeric(datawizard::center(lifetime_ca)),
+  past_year_vr_c = as.numeric(datawizard::center(past_year_vr)),
+  identification_c = as.numeric(datawizard::center(identification)),
+  age_c = as.numeric(datawizard::center(age))
+) %>% ungroup()
+
+black_data <- analysis_data %>% filter(group == "Black")
+latine_data <- analysis_data %>% filter(group == "Hispanic/Latine")
+asian_data <- analysis_data %>% filter(group == "Asian")
+group_data <- list(Black = black_data, `Hispanic/Latine` = latine_data, Asian = asian_data)
+```
+
+```{r reporting}
+hc3_table <- function(model) {
+  covariance <- sandwich::vcovHC(model, type = "HC3")
+  tests <- lmtest::coeftest(model, vcov. = covariance, df = df.residual(model))
+  critical_t <- qt(.975, df = df.residual(model))
+  data.frame(
+    term = rownames(tests), B = tests[, 1], SE_HC3 = tests[, 2],
+    t = tests[, 3], df = df.residual(model), p = tests[, 4],
+    CI_low = tests[, 1] - critical_t * tests[, 2],
+    CI_high = tests[, 1] + critical_t * tests[, 2],
+    n = nobs(model), R2 = summary(model)$r.squared,
+    adjusted_R2 = summary(model)$adj.r.squared, row.names = NULL
+  )
+}
+
+collect_coefficients <- function(fits, model_name) {
+  bind_rows(lapply(names(fits), function(group_name) {
+    hc3_table(fits[[group_name]]) %>%
+      mutate(model = model_name, group = group_name, .before = 1)
+  }))
+}
+
+focal_results <- function(coefficients, focal_term) {
+  coefficients %>% filter(term == focal_term) %>%
+    mutate(p_Holm_three = p.adjust(p, method = "holm"))
+}
+```
+
+# Main analyses
+
+
+## Model 1: lifetime engagement × VR
+
+```{r model-1}
+model1_black <- lm(future_ca ~ lifetime_ca_c * past_year_vr_c, data = black_data)
+model1_latine <- lm(future_ca ~ lifetime_ca_c * past_year_vr_c, data = latine_data)
+model1_asian <- lm(future_ca ~ lifetime_ca_c * past_year_vr_c, data = asian_data)
+
+model1_fits <- list(Black = model1_black, `Hispanic/Latine` = model1_latine,
+                      Asian = model1_asian)
+coefficients1 <- collect_coefficients(model1_fits, "Model1")
+focal1 <- focal_results(coefficients1, "lifetime_ca_c:past_year_vr_c")
+knitr::kable(coefficients1 %>% select(group, term, B, SE_HC3, CI_low, CI_high, p, n, R2), digits = 4)
+knitr::kable(focal1 %>% select(group, B, CI_low, CI_high, p, p_Holm_three), digits = 5)
+```
+
+### Simple VR slopes — Table S3
+
+```{r model-1-slopes}
+slopes1 <- bind_rows(lapply(names(model1_fits), function(group_name) {
+  d <- group_data[[group_name]]
+  m <- model1_fits[[group_name]]
+  moderator_values <- list(lifetime_ca_c = c(-sd(d$lifetime_ca), 0, sd(d$lifetime_ca)))
+  slopes <- emmeans::emtrends(
+    m, specs = ~ lifetime_ca_c, var = "past_year_vr_c",
+    at = moderator_values, vcov. = sandwich::vcovHC(m, type = "HC3"), df = df.residual(m)
+  )
+  as.data.frame(summary(slopes, infer = c(TRUE, TRUE), adjust = "none")) %>%
+    mutate(group = group_name, model = "Model1", .before = 1)
+}))
+knitr::kable(slopes1, digits = 4)
+```
+
+## Model 2: lifetime engagement × VR × identification
+
+```{r model-2}
+model2_black <- lm(future_ca ~ lifetime_ca_c * past_year_vr_c * identification_c,
+                   data = black_data)
+model2_latine <- lm(future_ca ~ lifetime_ca_c * past_year_vr_c * identification_c,
+                    data = latine_data)
+model2_asian <- lm(future_ca ~ lifetime_ca_c * past_year_vr_c * identification_c,
+                   data = asian_data)
+
+model2_fits <- list(Black = model2_black, `Hispanic/Latine` = model2_latine,
+                      Asian = model2_asian)
+coefficients2 <- collect_coefficients(model2_fits, "Model2")
+focal2 <- focal_results(coefficients2, "lifetime_ca_c:past_year_vr_c:identification_c")
+knitr::kable(coefficients2 %>% select(group, term, B, SE_HC3, CI_low, CI_high, p, n, R2), digits = 4)
+knitr::kable(focal2 %>% select(group, B, CI_low, CI_high, p, p_Holm_three), digits = 5)
+```
+
+### Simple VR slopes — Tables S4–S6
+
+```{r model-2-slopes}
+slopes2 <- bind_rows(lapply(names(model2_fits), function(group_name) {
+  d <- group_data[[group_name]]
+  m <- model2_fits[[group_name]]
+  moderator_values <- list(lifetime_ca_c = c(-sd(d$lifetime_ca), 0, sd(d$lifetime_ca)))
+  moderator_values$identification_c <- c(-sd(d$identification), 0, sd(d$identification))
+  slopes <- emmeans::emtrends(
+    m, specs = ~ lifetime_ca_c * identification_c, var = "past_year_vr_c",
+    at = moderator_values, vcov. = sandwich::vcovHC(m, type = "HC3"), df = df.residual(m)
+  )
+  as.data.frame(summary(slopes, infer = c(TRUE, TRUE), adjust = "none")) %>%
+    mutate(group = group_name, model = "Model2", .before = 1)
+}))
+knitr::kable(slopes2, digits = 4)
+```
+
+```{r model-list}
+models <- list(Model1 = model1_fits, Model2 = model2_fits)
+```
+
+# Supplementary analyses
+
+## Age, gender, and recruitment — Table S7
+
+
+```{r gender-covariate}
+analysis_data <- analysis_data %>% mutate(
+  gender_covariate = case_when(
+    gender %in% c("Male", "Transgender male") ~ "Men",
+    gender %in% c("Female", "Transgender female") ~ "Women",
+    gender %in% c("Non-binary", "Genderqueer", "Genderfluid") ~ "Gender diverse",
+    TRUE ~ NA_character_
+  ),
+  gender_covariate = factor(gender_covariate, levels = c("Women", "Men", "Gender diverse"))
+)
+```
+
+```{r supplement-formulas}
+model1_formula <- future_ca ~ lifetime_ca_c * past_year_vr_c
+model2_formula <- future_ca ~ lifetime_ca_c * past_year_vr_c * identification_c
+base_formulas <- list(Model1 = model1_formula, Model2 = model2_formula)
+```
+
+```{r matched-adjustment}
+fit_adjustment_check <- function(data, covariates, check_name, sample_name) {
+  bind_rows(lapply(names(base_formulas), function(model_name) {
+    original_formula <- base_formulas[[model_name]]
+    required <- unique(c(all.vars(original_formula), covariates))
+    d <- as.data.frame(data[complete.cases(data[, required]), , drop = FALSE])
+    d <- droplevels(d)
+    adjusted_formula <- update(original_formula,
+                               paste(". ~ . +", paste(covariates, collapse = " + ")))
+    unadjusted <- lm(original_formula, data = d, na.action = na.fail)
+    adjusted <- lm(adjusted_formula, data = d, na.action = na.fail)
+    bind_rows(
+      hc3_table(unadjusted) %>% mutate(version = "Unadjusted on matched sample"),
+      hc3_table(adjusted) %>% mutate(version = "Adjusted")
+    ) %>% mutate(check = check_name, group = sample_name, model = model_name, .before = 1)
+  }))
+}
+```
+
+```{r age-gender}
+covariate_data <- analysis_data %>%
+  filter(!(group == "Black" & gender_covariate == "Gender diverse"))
+demographic_checks <- bind_rows(lapply(levels(analysis_data$group), function(group_name) {
+  d <- filter(covariate_data, group == group_name)
+  fit_adjustment_check(d, c("age_c", "gender_covariate"), "Age and gender", group_name)
+}))
+```
+
+```{r source-adjustment}
+source_checks <- bind_rows(lapply(c("Black", "Hispanic/Latine"), function(group_name) {
+  fit_adjustment_check(filter(covariate_data, group == group_name),
+                        c("age_c", "gender_covariate", "recruitment"),
+                        "Age gender and recruitment", group_name)
+}))
+supplementary_coefficients <- bind_rows(demographic_checks, source_checks)
+
+supplement_focal <- supplementary_coefficients %>% filter(
+  (model == "Model1" & term == "lifetime_ca_c:past_year_vr_c") |
+    (model == "Model2" & term == "lifetime_ca_c:past_year_vr_c:identification_c")
+)
+
+knitr::kable(supplement_focal %>% select(check, group, model, version, B, CI_low, CI_high, p, n), digits = 4)
+```
+
+## Pooled group adjustment — Table S8
+
+
+```{r pooled-group}
+pooled_data <- analysis_data %>% mutate(
+  lifetime_ca_pool_c = as.numeric(datawizard::center(lifetime_ca)),
+  past_year_vr_pool_c = as.numeric(datawizard::center(past_year_vr)),
+  identification_pool_c = as.numeric(datawizard::center(identification)),
+  age_pool_c = as.numeric(datawizard::center(age))
+)
+pooled1 <- lm(future_ca ~ lifetime_ca_pool_c * past_year_vr_pool_c + group, data = pooled_data)
+pooled2 <- lm(future_ca ~ lifetime_ca_pool_c * past_year_vr_pool_c * identification_pool_c + group,
+               data = pooled_data)
+pooled_results <- bind_rows(
+  hc3_table(pooled1) %>% mutate(model = "Model1", version = "Group adjusted", .before = 1),
+  hc3_table(pooled2) %>% mutate(model = "Model2", version = "Group adjusted", .before = 1)
+)
+```
+
+```{r pooled-adjusted}
+pooled_complete <- pooled_data %>% filter(complete.cases(
+  future_ca, lifetime_ca_pool_c, past_year_vr_pool_c, identification_pool_c,
+  group, age_pool_c, gender_covariate, recruitment
+))
+pooled1_matched <- lm(formula(pooled1), data = pooled_complete)
+pooled2_matched <- lm(formula(pooled2), data = pooled_complete)
+pooled1_adjusted <- update(pooled1_matched, . ~ . + age_pool_c + gender_covariate + recruitment)
+pooled2_adjusted <- update(pooled2_matched, . ~ . + age_pool_c + gender_covariate + recruitment)
+pooled_results <- bind_rows(pooled_results,
+  hc3_table(pooled1_matched) %>% mutate(model = "Model1", version = "Group adjusted on matched sample", .before = 1),
+  hc3_table(pooled2_matched) %>% mutate(model = "Model2", version = "Group adjusted on matched sample", .before = 1),
+  hc3_table(pooled1_adjusted) %>% mutate(model = "Model1", version = "Group age gender and source adjusted", .before = 1),
+  hc3_table(pooled2_adjusted) %>% mutate(model = "Model2", version = "Group age gender and source adjusted", .before = 1)
+)
+
+pooled_focal <- pooled_results %>% filter(
+  (model == "Model1" & term == "lifetime_ca_pool_c:past_year_vr_pool_c") |
+    (model == "Model2" & term == "lifetime_ca_pool_c:past_year_vr_pool_c:identification_pool_c")
+)
+knitr::kable(pooled_focal %>% select(model, version, B, CI_low, CI_high, p, n), digits = 4)
+```
